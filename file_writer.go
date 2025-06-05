@@ -1,6 +1,7 @@
 package hdfs
 
 import (
+	"crypto/cipher"
 	"errors"
 	"os"
 	"strings"
@@ -37,6 +38,9 @@ type FileWriter struct {
 	storeInDB       bool
 	smallFileBuffer []byte
 	pos             uint64
+
+	// Key and IV for transparent encryption support.
+	enc *transparentEncryptionInfo
 }
 
 // Create opens a new file in HDFS with the default replication, block size,
@@ -74,13 +78,14 @@ func (c *Client) CreateFile(name string, replication int, blockSize int64, perm 
 	}
 
 	createReq := &hdfs.CreateRequestProto{
-		Src:          proto.String(name),
-		Masked:       &hdfs.FsPermissionProto{Perm: proto.Uint32(uint32(perm))},
-		ClientName:   proto.String(c.namenode.ClientName),
-		CreateFlag:   createFlag,
-		CreateParent: proto.Bool(createParent),
-		Replication:  proto.Uint32(uint32(replication)),
-		BlockSize:    proto.Uint64(uint64(blockSize)),
+		Src:                   proto.String(name),
+		Masked:                &hdfs.FsPermissionProto{Perm: proto.Uint32(uint32(perm))},
+		ClientName:            proto.String(c.namenode.ClientName),
+		CreateFlag:            createFlag,
+		CreateParent:          proto.Bool(createParent),
+		Replication:           proto.Uint32(uint32(replication)),
+		BlockSize:             proto.Uint64(uint64(blockSize)),
+		CryptoProtocolVersion: []hdfs.CryptoProtocolVersionProto{hdfs.CryptoProtocolVersionProto_ENCRYPTION_ZONES},
 	}
 	createResp := &hdfs.CreateResponseProto{}
 
@@ -94,6 +99,15 @@ func (c *Client) CreateFile(name string, replication int, blockSize int64, perm 
 		storedInDB = true
 	}
 
+	var enc *transparentEncryptionInfo
+	if createResp.GetFs().GetFileEncryptionInfo() != nil {
+		enc, err = c.kmsGetKey(createResp.GetFs().GetFileEncryptionInfo())
+		if err != nil {
+			_ = c.Remove(name)
+			return nil, &os.PathError{"create", name, err}
+		}
+	}
+
 	return &FileWriter{
 		client:          c,
 		name:            name,
@@ -103,6 +117,7 @@ func (c *Client) CreateFile(name string, replication int, blockSize int64, perm 
 		storeInDB:       storedInDB,
 		smallFileBuffer: []byte{},
 		pos:             0,
+		enc:             enc,
 	}, nil
 }
 
@@ -127,6 +142,14 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
 	}
 
+	var enc *transparentEncryptionInfo
+	if appendResp.GetStat().GetFileEncryptionInfo() != nil {
+		enc, err = c.kmsGetKey(appendResp.GetStat().GetFileEncryptionInfo())
+		if err != nil {
+			return nil, &os.PathError{"append", name, err}
+		}
+	}
+
 	f := &FileWriter{
 		client:          c,
 		name:            name,
@@ -136,6 +159,7 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		storeInDB:       false,
 		smallFileBuffer: []byte{},
 		pos:             *appendResp.GetStat().Length,
+		enc:             enc,
 	}
 
 	// This returns nil if there are no blocks (it's an empty file) or if the
@@ -233,7 +257,25 @@ func (f *FileWriter) writeInternal(b []byte) (int, error) {
 
 	off := 0
 	for off < len(b) {
-		n, err := f.blockWriter.Write(b[off:])
+		var n int
+		var err error
+		if f.enc != nil {
+			if f.enc.stream == nil {
+				f.enc.stream, err = aesCreateCTRStream(int64(f.pos), f.enc)
+				if err != nil {
+					return 0, err
+				}
+			}
+			n, err = cipher.StreamWriter{S: f.enc.stream, W: f.blockWriter}.Write(b[off:])
+			// If blockWriter writes less than expected bytes,
+			// we must recreate stream chipher, since it's internal counter goes forward.
+			if n != len(b[off:]) {
+				f.enc.stream = nil
+			}
+		} else {
+			n, err = f.blockWriter.Write(b[off:])
+		}
+
 		if n > 0 {
 			off += n
 			f.pos += uint64(n)

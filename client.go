@@ -8,6 +8,8 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"os/user"
 	"sort"
@@ -39,6 +41,8 @@ type Client struct {
 
 	defaults      *hdfs.FsServerDefaultsProto
 	encryptionKey *hdfs.DataEncryptionKeyProto
+
+	http *http.Client
 }
 
 // ClientOptions represents the configurable options for a client.
@@ -210,7 +214,7 @@ func NewClient(options ClientOptions) (*Client, error) {
 	newOptions := options
 	newOptions.Addresses = []string{string(nnAddress)}
 
-	client.Close()
+	_ = client.Close()
 	newClient, err := newClientInt(newOptions, []string{nnAddress}, leaderNNAddress)
 	if err != nil {
 		return nil, err
@@ -237,7 +241,7 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 
 	if options.TLS {
 		// make sure that the required paremeters are valid
-		options.checkCertificates()
+		_ = options.checkCertificates()
 	}
 
 	nnConnectionOptions := rpc.NamenodeConnectionOptions{
@@ -266,10 +270,19 @@ func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress str
 		return nil, err
 	}
 
-	c := &Client{namenode: namenodeConn, leaderNamenode: leaderConn, options: options}
+	// We need cookies to access KMS (required for HDFS encrypted zone).
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, errors.New("cant create cookie jar")
+	}
+
+	// Not extending ClientOptions to preserve compatibility, so timeouts not configured.
+	httpClient := &http.Client{Jar: jar}
+
+	c := &Client{namenode: namenodeConn, leaderNamenode: leaderConn, options: options, http: httpClient}
 
 	// set epoch
-	c.setEpoch()
+	_ = c.setEpoch()
 
 	return c, nil
 }
