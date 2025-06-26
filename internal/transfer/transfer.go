@@ -116,8 +116,8 @@ func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string
 	//Uncomment for debugging
 	//oldAdd := fmt.Sprintf("%s:%d", host, port)
 
-	hostOverride := os.Getenv(HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV)
-	portOverride := os.Getenv(HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV)
+	hostOverride := getEnv(HOPSFS_CLOUD_DATANODE_HOSTNAME_OVERRIDE_ENV)
+	portOverride := getEnv(HOPSFS_CLOUD_DATANODE_PORT_OVERRIDE_ENV)
 
 	if hostOverride != "" {
 		host = hostOverride
