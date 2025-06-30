@@ -533,3 +533,95 @@ func TestFileAppendDeadlineBefore(t *testing.T) {
 	_, err = writer.Write(bytes)
 	assert.Error(t, err)
 }
+
+func skipWithoutEncryptedZone(t *testing.T) {
+	if os.Getenv("TRANSPARENT_ENCRYPTION") != "true" {
+		t.Skip("Skipping, this test requires encryption zone to make sense")
+	}
+}
+
+// We assume the server has an encryption zone in /zone directory!
+func TestEncryptedZoneWriteChunks(t *testing.T) {
+	skipWithoutEncryptedZone(t)
+
+	originalText := []byte("some random plain text, nice to have it quite long")
+	client := getClient(t)
+	writer, err := client.Create("/zone/write_chunks.txt")
+	require.NoError(t, err)
+
+	var pos int64 = 0
+	for _, x := range []int{5, 7, 6, 4, 28} {
+		_, err = writer.Write(originalText[pos : pos+int64(x)])
+		require.NoError(t, err)
+		pos += int64(x)
+	}
+	assertClose(t, writer)
+
+	reader, err := client.Open("/zone/write_chunks.txt")
+	require.NoError(t, err)
+
+	bytes, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, originalText, bytes)
+}
+
+// We assume the server has an encryption zone in /zone directory!
+func TestEncryptedZoneAppendChunks(t *testing.T) {
+	skipWithoutEncryptedZone(t)
+
+	originalText := []byte("some random plain text, nice to have it quite long")
+	client := getClient(t)
+	writer, err := client.Create("/zone/append_chunks.txt")
+	require.NoError(t, err)
+	assertClose(t, writer)
+
+	var pos int64 = 0
+	for _, x := range []int{5, 7, 6, 4, 28} {
+		writer, err := client.Append("/zone/append_chunks.txt")
+		require.NoError(t, err)
+		_, err = writer.Write(originalText[pos : pos+int64(x)])
+		require.NoError(t, err)
+		pos += int64(x)
+		assertClose(t, writer)
+	}
+
+	reader, err := client.Open("/zone/append_chunks.txt")
+	require.NoError(t, err)
+	bytes, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, originalText, bytes)
+}
+
+// We assume the server has an encryption zone in /zone directory!
+func TestEncryptedZoneLargeBlock(t *testing.T) {
+	skipWithoutEncryptedZone(t)
+
+	// Generate quite large data block, so we can trigger encryption in chunks.
+	mobydick, err := os.Open("testdata/mobydick.txt")
+	require.NoError(t, err)
+	originalText, err := io.ReadAll(mobydick)
+	require.NoError(t, err)
+	client := getClient(t)
+
+	// Create file with small (128Kb) block size, so encrypted chunk will be placed over multiple hdfs blocks.
+	writer, err := client.CreateFile("/zone/mobydick.unittest", 1, 131072, 0755, true, true)
+	require.NoError(t, err)
+
+	_, err = writer.Write(originalText)
+	require.NoError(t, err)
+	assertClose(t, writer)
+
+	reader, err := client.Open("/zone/mobydick.unittest")
+	require.NoError(t, err)
+	bytes, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, originalText, bytes)
+
+	// Ensure read after seek works as expected:
+	_, err = reader.Seek(35657, io.SeekStart)
+	require.NoError(t, err)
+	bytes = make([]byte, 64)
+	_, err = reader.Read(bytes)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("By reason of these things, then, the whaling voyage was welcome;"), bytes)
+}
