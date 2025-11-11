@@ -398,7 +398,10 @@ func (f *FileWriter) closeInt() error {
 
 	completeResp := &hdfs.CompleteResponseProto{}
 
-	sleep := time.Duration(250)
+	sleep := time.Duration(10)
+	loopStart := time.Now()
+	retryCount := 0
+
 	for i := 0; i < 10; i++ {
 		err := f.client.namenode.Execute("complete", completeReq, completeResp)
 		if err != nil {
@@ -408,14 +411,17 @@ func (f *FileWriter) closeInt() error {
 		closed := *completeResp.Result
 
 		if !closed { //retry after sleep
+			retryCount++
 			time.Sleep(sleep * time.Millisecond)
 			sleep *= 2
 			continue
 		} else {
+			log.Printf("closeInt: complete loop finished - retries: %d, total loop time: %v", retryCount, time.Since(loopStart))
 			return nil
 		}
 	}
 
+	log.Printf("closeInt: complete loop finished - retries: %d, total loop time: %v", retryCount, time.Since(loopStart))
 	return &os.PathError{Op: "create", Path: f.name, Err: errors.New("failed to close the file")}
 }
 
