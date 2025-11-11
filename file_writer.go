@@ -453,9 +453,13 @@ func (f *FileWriter) addBlockWithRetry(previous *hdfs.ExtendedBlockProto) (*hdfs
 	var err error = nil
 	retryCount := 0
 	totalDelayMs := time.Duration(0)
+	totalExecuteTime := time.Duration(0)
 
 	for i := 0; i < 8; i++ { // 8 --> ~9.3 min
+		executeStart := time.Now()
 		err = f.client.namenode.Execute("addBlock", addBlockReq, addBlockResp)
+		executeDuration := time.Since(executeStart)
+		totalExecuteTime += executeDuration
 		if err != nil && strings.Contains(err.Error(), "NotReplicatedYetException") {
 			retryCount++
 			totalDelayMs += initDelay
@@ -466,9 +470,8 @@ func (f *FileWriter) addBlockWithRetry(previous *hdfs.ExtendedBlockProto) (*hdfs
 		}
 	}
 
-	if retryCount > 0 {
-		log.Printf("addBlockWithRetry: retried %d times, total delay: %v", retryCount, totalDelayMs*time.Millisecond)
-	}
+	log.Printf("addBlockWithRetry: retried %d times, total delay: %v, total Execute() time: %v",
+		retryCount, totalDelayMs*time.Millisecond, totalExecuteTime)
 
 	return addBlockResp, err
 }
