@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"time"
 
@@ -104,6 +105,11 @@ func (bw *BlockWriter) Flush() error {
 // datanode, and sends a final packet indicating the end of the block. The
 // block must still be finalized with the namenode.
 func (bw *BlockWriter) Close() error {
+	start := time.Now()
+	defer func() {
+		log.Printf("BlockWriter.Close() execution time: %v", time.Since(start))
+	}()
+
 	bw.closed = true
 	if bw.conn != nil {
 		defer bw.conn.Close()
