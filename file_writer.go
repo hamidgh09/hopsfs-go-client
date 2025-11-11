@@ -333,6 +333,9 @@ func (f *FileWriter) Flush() error {
 // exponential backoff.
 func (f *FileWriter) Close() error {
 	closeIntStart := time.Now()
+	defer func() {
+		log.Printf("Close() totla execution time: %v", time.Since(closeIntStart))
+	}()
 	err := f.closeInt()
 	closeIntDuration := time.Since(closeIntStart)
 	log.Printf("Close: closeInt() took: %v", closeIntDuration)
