@@ -332,7 +332,11 @@ func (f *FileWriter) Flush() error {
 // error. The Java client, for context, always chooses to retry, with
 // exponential backoff.
 func (f *FileWriter) Close() error {
+	closeIntStart := time.Now()
 	err := f.closeInt()
+	closeIntDuration := time.Since(closeIntStart)
+	log.Printf("Close: closeInt() took: %v", closeIntDuration)
+
 	if err != nil {
 		// if the close failed due to the DB throwing
 		// OutOfExtents Exception then we retry the close
@@ -341,16 +345,23 @@ func (f *FileWriter) Close() error {
 		if f.storeInDB && len(f.smallFileBuffer) > 0 &&
 			strings.Contains(err.Error(), "OutOfDBExtentsException") {
 
+			writeInternalStart := time.Now()
 			_, err := f.writeInternal(f.smallFileBuffer)
+			writeInternalDuration := time.Since(writeInternalStart)
 			if err != nil {
 				return err
 			}
 			f.storeInDB = false
 
+			closeIntStart := time.Now()
 			err = f.closeInt()
+			closeIntDuration := time.Since(closeIntStart)
 			if err != nil {
 				return err
 			}
+
+			log.Printf("Close: retry due to OutOfDBExtentsException - writeInternal() took: %v, closeInt() took: %v",
+				writeInternalDuration, closeIntDuration)
 		} else {
 			return err
 		}
