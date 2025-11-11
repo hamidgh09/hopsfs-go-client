@@ -3,6 +3,7 @@ package hdfs
 import (
 	"crypto/cipher"
 	"errors"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -232,6 +233,11 @@ func (f *FileWriter) SetDeadline(t time.Time) error {
 // of this, it is important that Close is called after all data has been
 // written.
 func (f *FileWriter) Write(b []byte) (int, error) {
+	start := time.Now()
+	defer func() {
+		log.Printf("Write() execution time: %v", time.Since(start))
+	}()
+
 	if f.storeInDB {
 		f.smallFileBuffer = append(f.smallFileBuffer, b...)
 		if len(f.smallFileBuffer) <= MaxSmallFileSize {
@@ -445,16 +451,25 @@ func (f *FileWriter) addBlockWithRetry(previous *hdfs.ExtendedBlockProto) (*hdfs
 	addBlockResp := &hdfs.AddBlockResponseProto{}
 	initDelay := time.Duration(400)
 	var err error = nil
+	retryCount := 0
+	totalDelayMs := time.Duration(0)
 
 	for i := 0; i < 8; i++ { // 8 --> ~9.3 min
 		err = f.client.namenode.Execute("addBlock", addBlockReq, addBlockResp)
 		if err != nil && strings.Contains(err.Error(), "NotReplicatedYetException") {
+			retryCount++
+			totalDelayMs += initDelay
 			time.Sleep(initDelay * time.Millisecond)
 			initDelay *= 2
 		} else {
 			break
 		}
 	}
+
+	if retryCount > 0 {
+		log.Printf("addBlockWithRetry: retried %d times, total delay: %v", retryCount, totalDelayMs*time.Millisecond)
+	}
+
 	return addBlockResp, err
 }
 
