@@ -233,11 +233,6 @@ func (f *FileWriter) SetDeadline(t time.Time) error {
 // of this, it is important that Close is called after all data has been
 // written.
 func (f *FileWriter) Write(b []byte) (int, error) {
-	start := time.Now()
-	defer func() {
-		log.Printf("Write() execution time: %v", time.Since(start))
-	}()
-
 	if f.storeInDB {
 		f.smallFileBuffer = append(f.smallFileBuffer, b...)
 		if len(f.smallFileBuffer) <= MaxSmallFileSize {
@@ -332,13 +327,7 @@ func (f *FileWriter) Flush() error {
 // error. The Java client, for context, always chooses to retry, with
 // exponential backoff.
 func (f *FileWriter) Close() error {
-	closeIntStart := time.Now()
-	defer func() {
-		log.Printf("Close() totla execution time: %v", time.Since(closeIntStart))
-	}()
 	err := f.closeInt()
-	closeIntDuration := time.Since(closeIntStart)
-	log.Printf("Close: closeInt() took: %v", closeIntDuration)
 
 	if err != nil {
 		// if the close failed due to the DB throwing
