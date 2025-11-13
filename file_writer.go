@@ -402,6 +402,7 @@ func (f *FileWriter) closeInt() error {
 	loopStart := time.Now()
 	retryCount := 0
 
+	time.Sleep(sleep * time.Millisecond)
 	for i := 0; i < 10; i++ {
 		err := f.client.namenode.Execute("complete", completeReq, completeResp)
 		if err != nil {
