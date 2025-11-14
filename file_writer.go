@@ -391,7 +391,12 @@ func (f *FileWriter) closeInt() error {
 	loopStart := time.Now()
 	retryCount := 0
 
-	time.Sleep(sleep * time.Millisecond)
+	if f.pos > 0 {
+		time.Sleep(sleep * time.Millisecond)
+	} else {
+		log.Println("ignored sleep for empty file (pos=0)")
+	}
+
 	for i := 0; i < 10; i++ {
 		err := f.client.namenode.Execute("complete", completeReq, completeResp)
 		if err != nil {
