@@ -378,7 +378,7 @@ func (f *FileWriter) closeInt() error {
 
 	completeResp := &hdfs.CompleteResponseProto{}
 
-	sleep := time.Duration(250)
+	sleep := time.Duration(100)
 	for i := 0; i < 10; i++ {
 		err := f.client.namenode.Execute("complete", completeReq, completeResp)
 		if err != nil {
