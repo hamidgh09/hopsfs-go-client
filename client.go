@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/colinmarc/hdfs/v2/hadoopconf"
@@ -192,6 +193,34 @@ func ClientOptionsFromConf(conf hadoopconf.HadoopConf) ClientOptions {
 	return options
 }
 
+const (
+	namenodeHostnameOverrideEnv = "HOPSFS_CLOUD_NAMENODE_HOSTNAME_OVERRIDE"
+	namenodePortOverrideEnv     = "HOPSFS_CLOUD_NAMENODE_PORT_OVERRIDE"
+)
+
+// getNamenodeAddress returns the address for a namenode, using the
+// HOPSFS_CLOUD_NAMENODE_HOSTNAME_OVERRIDE and HOPSFS_CLOUD_NAMENODE_PORT_OVERRIDE
+// environment variables if set, otherwise using the advertised address from the namenode.
+func getNamenodeAddress(nn *hdfs.ActiveNodeProto) string {
+	host := os.Getenv(namenodeHostnameOverrideEnv)
+	if host == "" {
+		host = nn.GetRpcIpAddress()
+	}
+
+	port := nn.GetRpcPort()
+	portOverride := os.Getenv(namenodePortOverrideEnv)
+	if portOverride != "" {
+		p, err := strconv.ParseInt(portOverride, 10, 32)
+		if err != nil {
+			fmt.Printf("Bad override port. %s:%s\n", namenodePortOverrideEnv, portOverride)
+			os.Exit(1)
+		}
+		port = int32(p)
+	}
+
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
 // NewClient returns a connected Client for the given options, or an error if
 // the client could not be created.
 func NewClient(options ClientOptions) (*Client, error) {
@@ -209,8 +238,8 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}
 
 	randNNi := rand.Intn(len(nns))
-	nnAddress := fmt.Sprintf("%s:%d", nns[randNNi].GetRpcIpAddress(), nns[randNNi].GetRpcPort())
-	leaderNNAddress := fmt.Sprintf("%s:%d", nns[0].GetRpcIpAddress(), nns[0].GetRpcPort())
+	nnAddress := getNamenodeAddress(nns[randNNi])
+	leaderNNAddress := getNamenodeAddress(nns[0])
 	newOptions := options
 	newOptions.Addresses = []string{string(nnAddress)}
 
