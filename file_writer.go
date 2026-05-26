@@ -39,6 +39,11 @@ type FileWriter struct {
 	smallFileBuffer []byte
 	pos             uint64
 	lastError       error
+	// newGS is the bumped generation stamp returned by
+	// updateBlockForPipeline during Append(). It is the GS the DN
+	// finalized at, so the `complete` RPC must report this value as the
+	// lastBlock's GS, not the pre-bump GS stored on blockWriter.Block.B.
+	newGS uint64
 
 	// Key and IV for transparent encryption support.
 	enc *transparentEncryptionInfo
@@ -160,7 +165,20 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 	initDelay := time.Duration(100)
 	for i := 0; i < 9; i++ { // 1 min max
 		err = c.namenode.Execute("append", appendReq, appendResp)
-		if err != nil && strings.Contains(err.Error(), "NotReplicatedYetException") {
+		// Retry on transient append-time errors:
+		//   - NotReplicatedYetException: NN-side wraps this in RetriableException
+		//     when the last block is COMMITTED (waiting for IBR to drive it to
+		//     COMPLETE).
+		//   - "is not sufficiently replicated yet": NN's appendFileInternal
+		//     throws plain IOException when the last block is COMPLETE but
+		//     liveReplicas < minReplication. This is also transient — it
+		//     resolves once DN block reports land. The Java client never
+		//     reproducibly hits this because its DataStreamer waits for ack
+		//     on prior writes, but the Go client's tight loop in
+		//     TestFileAppendRepeatedly races it.
+		if err != nil &&
+			(strings.Contains(err.Error(), "NotReplicatedYetException") ||
+				strings.Contains(err.Error(), "is not sufficiently replicated yet")) {
 			time.Sleep(initDelay * time.Millisecond)
 			initDelay *= 2
 		} else if err != nil {
@@ -168,6 +186,12 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		} else {
 			break
 		}
+	}
+	// Retry budget exhausted while the last error was still retryable —
+	// surface it instead of falling through with a nil appendResp.Stat,
+	// which would NPE at the FileWriter construction below.
+	if err != nil {
+		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
 	}
 
 	var enc *transparentEncryptionInfo
@@ -204,6 +228,71 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		return f, nil
 	}
 
+	// Bump the generation stamp for this append, mirroring the Java
+	// DataStreamer's setupPipelineForAppendOrRecovery flow. The NN's
+	// prepareFileForAppend returns the un-bumped block; without this
+	// second RPC the DN sees latestGenerationStamp == block.GS and
+	// CloudFsDatasetImpl.appendInternal adds the current GS into
+	// ProvidedReplicaBeingWritten's oldGS list, scheduling a
+	// self-delete of the just-uploaded cloud object (HOPSFS-345
+	// partial-chunk-append self-delete).
+	oldExtBlock := block.GetB()
+	updReq := &hdfs.UpdateBlockForPipelineRequestProto{
+		Block:      oldExtBlock,
+		ClientName: proto.String(c.namenode.ClientName),
+	}
+	updResp := &hdfs.UpdateBlockForPipelineResponseProto{}
+	err = c.namenode.Execute("updateBlockForPipeline", updReq, updResp)
+	if err != nil {
+		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
+	}
+	newLocatedBlock := updResp.GetBlock()
+	newGS := newLocatedBlock.GetB().GetGenerationStamp()
+
+	// Confirm the new GS + pipeline targets on the NN. Java's
+	// DataStreamer calls updatePipeline only after writeBlock succeeds
+	// (so it can retry with new nodes if the pipeline failed). The Go
+	// client has no pipeline recovery, so we commit to the freshly
+	// returned pipeline upfront and rely on the eventual `complete`
+	// RPC to surface any node-level failure.
+	//
+	// The locations come from the original `append` response, NOT from
+	// the updateBlockForPipeline response: FSNamesystem.updateBlockForPipeline
+	// returns a LocatedBlock with empty DatanodeInfo[] (see
+	// FSNamesystem.java:6591 — `new LocatedBlock(block, new DatanodeInfo[0])`).
+	// Passing those empty locations into updatePipeline would NPE inside
+	// BlockInfoContiguousUnderConstruction.setExpectedLocations.
+	newExtBlock := &hdfs.ExtendedBlockProto{
+		PoolId:          oldExtBlock.PoolId,
+		BlockId:         oldExtBlock.BlockId,
+		GenerationStamp: proto.Uint64(newGS),
+		NumBytes:        oldExtBlock.NumBytes,
+		// Preserve cloudBucket: HopsFS's FSNamesystem.commitOrCompleteLastBlock
+		// (line 4312) and appendFileInternal (line 2386) branch on
+		// commitBlock.isProvidedBlock(), which is true iff cloudBucket !=
+		// NON_EXISTENT_BUCKET_NAME. Dropping this field makes the NN treat
+		// the next append's last block as a regular HDFS block and wait
+		// indefinitely for liveReplicas >= minReplication.
+		CloudBucket: oldExtBlock.CloudBucket,
+	}
+	newNodes := make([]*hdfs.DatanodeIDProto, 0, len(block.GetLocs()))
+	for _, info := range block.GetLocs() {
+		newNodes = append(newNodes, info.GetId())
+	}
+	updPipReq := &hdfs.UpdatePipelineRequestProto{
+		ClientName: proto.String(c.namenode.ClientName),
+		OldBlock:   oldExtBlock,
+		NewBlock:   newExtBlock,
+		NewNodes:   newNodes,
+		StorageIDs: block.GetStorageIDs(),
+	}
+	updPipResp := &hdfs.UpdatePipelineResponseProto{}
+	err = c.namenode.Execute("updatePipeline", updPipReq, updPipResp)
+	if err != nil {
+		return nil, &os.PathError{Op: "append", Path: name, Err: interpretException(err)}
+	}
+	f.newGS = newGS
+
 	dialFunc, err := f.client.wrapDatanodeDial(
 		f.client.options.DatanodeDialFunc,
 		block.GetBlockToken())
@@ -217,6 +306,7 @@ func (c *Client) Append(name string) (*FileWriter, error) {
 		BlockSize:           f.blockSize,
 		Offset:              int64(block.B.GetNumBytes()),
 		Append:              true,
+		NewGS:               newGS,
 		UseDatanodeHostname: f.client.options.UseDatanodeHostname,
 		DialFunc:            dialFunc,
 	}
@@ -398,6 +488,24 @@ func (f *FileWriter) closeInt() error {
 	if !f.storeInDB {
 		if f.blockWriter != nil {
 			lastBlock = f.blockWriter.Block.GetB()
+			if f.newGS != 0 {
+				// The DN finalized at the bumped GS (Java protocol).
+				// Send that GS on `complete` so the NN matches it
+				// against the BlockInfoUC that updatePipeline already
+				// updated. blockWriter.Block.B still carries the old
+				// GS because BaseHeader.Block on the wire-level
+				// writeBlock RPC must be the pre-bump value.
+				// CloudBucket must be preserved: see comment in Append()
+				// — NN's commitOrCompleteLastBlock branches on
+				// isProvidedBlock(), which keys off cloudBucket.
+				lastBlock = &hdfs.ExtendedBlockProto{
+					PoolId:          lastBlock.PoolId,
+					BlockId:         lastBlock.BlockId,
+					GenerationStamp: proto.Uint64(f.newGS),
+					NumBytes:        proto.Uint64(uint64(f.blockWriter.Offset)),
+					CloudBucket:     lastBlock.CloudBucket,
+				}
+			}
 
 			// Close the blockWriter, flushing any buffered packets.
 			err := f.closeBlock()

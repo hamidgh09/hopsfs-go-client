@@ -31,6 +31,14 @@ type BlockWriter struct {
 	Offset int64
 	// Append indicates whether this is an append operation on an existing block.
 	Append bool
+	// NewGS, when non-zero on an append, is sent as
+	// OpWriteBlock.LatestGenerationStamp while BaseHeader.Block keeps the
+	// pre-bump GS. The DN's appendInternal compares the two and adds the
+	// pre-bump GS to its oldGS list for cleanup of the prior cloud-key
+	// version after the new upload. With NewGS == 0 (or NewGS ==
+	// Block.B.GetGenerationStamp()) the DN sees newGS == oldGS and
+	// self-deletes the just-PUT cloud object (HOPSFS-345).
+	NewGS uint64
 	// UseDatanodeHostname indicates whether the datanodes will be connected to
 	// via hostname (if true) or IP address (if false).
 	UseDatanodeHostname bool
@@ -184,6 +192,9 @@ func (bw *BlockWriter) currentStage() hdfs.OpWriteBlockProto_BlockConstructionSt
 
 func (bw *BlockWriter) generationTimestamp() int64 {
 	if bw.Append {
+		if bw.NewGS != 0 {
+			return int64(bw.NewGS)
+		}
 		return int64(bw.Block.B.GetGenerationStamp())
 	}
 

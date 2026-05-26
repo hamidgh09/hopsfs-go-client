@@ -115,6 +115,60 @@ message ShutdownDatanodeRequestProto {
 message ShutdownDatanodeResponseProto {
 }
 
+/**
+ * drainAndSuspendDatanode (HOPSFS-345):
+ *   Drain the datanode and suspend it. Stops accepting new connections
+ *   (read and write), waits for pending async cloud uploads and IBR work
+ *   to settle, and leaves the DN in a suspended state where it no longer
+ *   serves client traffic. Returns when drain has completed or the
+ *   timeout has elapsed. Does NOT shut the datanode down; callers wanting
+ *   to terminate the DN after a successful drain must invoke
+ *   shutdownDatanode separately. The suspended state persists until the
+ *   DN process is restarted.
+ */
+message DrainAndSuspendDatanodeRequestProto {
+  required uint64 timeoutSecs = 1;
+}
+
+message DrainAndSuspendDatanodeResponseProto {
+  required DrainStatusProto status = 1;
+}
+
+/**
+ * Drain lifecycle phase. NORMAL -> DRAINING -> DRAINED is the
+ * drain-initiated path; SHUTTING_DOWN is reached only via a separate
+ * shutdownDatanode call.
+ *
+ * Top-level (matches the Java-side scope) so the generated Go symbol is
+ * hdfs.DrainPhaseProto_*, mirroring the Java enum path.
+ */
+enum DrainPhaseProto {
+  DRAIN_PHASE_NORMAL = 0;
+  DRAIN_PHASE_DRAINING = 1;
+  DRAIN_PHASE_DRAINED = 2;
+  DRAIN_PHASE_SHUTTING_DOWN = 3;
+}
+
+/**
+ * Locally-available datanode drain status. All counter fields are
+ * optional with default=0 to match the Java DN serializer; the DN may
+ * omit zero-valued fields on the wire, so the client must accept their
+ * absence rather than rejecting the message.
+ */
+message DrainStatusProto {
+  required DrainPhaseProto phase = 1;
+  optional bool drainSucceeded = 2 [default = false];
+  optional uint32 writePipelinesActive = 3 [default = 0];
+  optional uint32 uploadsOutstanding = 4 [default = 0];
+  optional uint32 uploadQueueDepth = 5 [default = 0];
+  optional uint32 uploadActive = 6 [default = 0];
+  optional uint32 ibrPending = 7 [default = 0];
+  optional uint32 ibrSendsInFlight = 8 [default = 0];
+  optional uint32 interruptedUploadCount = 9 [default = 0];
+  optional uint32 interruptedUploadCountSinceDrainStart = 10 [default = 0];
+  optional uint64 millisRemaining = 11 [default = 0];
+}
+
 /** Tell datanode to evict active clients that are writing */
 message EvictWritersRequestProto {
 }
@@ -256,6 +310,9 @@ service ClientDatanodeProtocolService {
 
   rpc shutdownDatanode(ShutdownDatanodeRequestProto)
       returns(ShutdownDatanodeResponseProto);
+
+  rpc drainAndSuspendDatanode(DrainAndSuspendDatanodeRequestProto)
+      returns(DrainAndSuspendDatanodeResponseProto);
 
   rpc evictWriters(EvictWritersRequestProto)
       returns(EvictWritersResponseProto);
