@@ -209,8 +209,8 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}
 
 	randNNi := rand.Intn(len(nns))
-	nnAddress := fmt.Sprintf("%s:%d", nns[randNNi].GetRpcIpAddress(), nns[randNNi].GetRpcPort())
-	leaderNNAddress := fmt.Sprintf("%s:%d", nns[0].GetRpcIpAddress(), nns[0].GetRpcPort())
+	nnAddress := namenodeRpcAddress(nns[randNNi])
+	leaderNNAddress := namenodeRpcAddress(nns[0])
 	newOptions := options
 	newOptions.Addresses = []string{string(nnAddress)}
 
@@ -221,6 +221,21 @@ func NewClient(options ClientOptions) (*Client, error) {
 	}
 
 	return newClient, nil
+}
+
+func namenodeRpcAddress(nn *hdfs.ActiveNodeProto) string {
+	if transfer.RemoteAccessEnabled() {
+		host := nn.GetExternalRpcHostname()
+		port := nn.GetExternalRpcPort()
+		if host == "" || port == 0 {
+			fmt.Printf("%s is set but the namenode did not publish an external RPC address (namenode id %d)\n",
+				transfer.HOPSFS_CLIENT_REMOTE_ACCESS_ENABLED_ENV, nn.GetId())
+			os.Exit(1)
+		}
+		return fmt.Sprintf("%s:%d", host, port)
+	}
+
+	return fmt.Sprintf("%s:%d", nn.GetRpcIpAddress(), nn.GetRpcPort())
 }
 
 func newClientInt(options ClientOptions, nnAddresses []string, leaderAddress string) (*Client, error) {
