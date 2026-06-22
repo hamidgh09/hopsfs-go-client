@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strings"
 
 	hdfs "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_hdfs"
 	"google.golang.org/protobuf/proto"
@@ -101,22 +99,15 @@ func readBlockOpResponse(r io.Reader) (*hdfs.BlockOpResponseProto, error) {
 	return resp, err
 }
 
-const HOPSFS_CLIENT_REMOTE_ACCESS_ENABLED_ENV = "HOPSFS_CLIENT_REMOTE_ACCESS_ENABLED"
-
-func RemoteAccessEnabled() bool {
-	return strings.EqualFold(getEnv(HOPSFS_CLIENT_REMOTE_ACCESS_ENABLED_ENV), "true")
-}
-
-func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string {
-	if RemoteAccessEnabled() {
+func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname, remoteAccess bool) (string, error) {
+	if remoteAccess {
 		host := datanode.GetExternalHostName()
 		port := datanode.GetExternalXferPort()
 		if host == "" || port == 0 {
-			fmt.Printf("%s is set but the namenode did not publish an external datanode address (datanode %s)\n",
-				HOPSFS_CLIENT_REMOTE_ACCESS_ENABLED_ENV, datanode.GetDatanodeUuid())
-			os.Exit(1)
+			return "", fmt.Errorf("remote access is enabled but the namenode did not publish an external datanode address (datanode %s)",
+				datanode.GetDatanodeUuid())
 		}
-		return fmt.Sprintf("%s:%d", host, port)
+		return fmt.Sprintf("%s:%d", host, port), nil
 	}
 
 	var host string
@@ -127,5 +118,5 @@ func getDatanodeAddress(datanode *hdfs.DatanodeIDProto, useHostname bool) string
 	}
 	port := datanode.GetXferPort()
 
-	return fmt.Sprintf("%s:%d", host, port)
+	return fmt.Sprintf("%s:%d", host, port), nil
 }
