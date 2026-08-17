@@ -86,7 +86,7 @@ message CreateRequestProto {
   optional string ecPolicyName = 10;
   optional string storagePolicy = 11;
   //hopsfs
-  //optional EncodingPolicyProto policy = 12;
+  reserved 12; // was the erasure-coding policy; old clients may still send it
   optional string groupname = 13;
 }
 
