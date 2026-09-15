@@ -3,7 +3,6 @@ package hdfs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -13,6 +12,7 @@ import (
 	"os"
 	"os/user"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/colinmarc/hdfs/v2/hadoopconf"
@@ -203,14 +203,23 @@ func NewClient(options ClientOptions) (*Client, error) {
 	// we are now connected to a NN. Now get the list of all the alive NNs
 	// and connect to a random NN for better load balancing.
 	nns, err := client.getActiveNNs()
-	if err != nil || len(nns) == 1 {
-		// One NN which should also be the leader
+	if err != nil || len(nns) <= 1 {
+		// A single NameNode (which is then also the leader), an error, or
+		// an empty list: keep the connection that already works instead of
+		// re-resolving.
 		return client, nil
 	}
 
+	// The advertised addresses are used unchanged. The configured address
+	// may reach the NameNodes through a port none of them advertises, such
+	// as a port-remapping service in front of the cluster, and forcing that
+	// port onto every NameNode would point the client at ports nothing
+	// listens on.
 	randNNi := rand.Intn(len(nns))
-	nnAddress := fmt.Sprintf("%s:%d", nns[randNNi].GetRpcIpAddress(), nns[randNNi].GetRpcPort())
-	leaderNNAddress := fmt.Sprintf("%s:%d", nns[0].GetRpcIpAddress(), nns[0].GetRpcPort())
+	nnAddress := net.JoinHostPort(nns[randNNi].GetRpcIpAddress(),
+		strconv.Itoa(int(nns[randNNi].GetRpcPort())))
+	leaderNNAddress := net.JoinHostPort(nns[0].GetRpcIpAddress(),
+		strconv.Itoa(int(nns[0].GetRpcPort())))
 	newOptions := options
 	newOptions.Addresses = []string{string(nnAddress)}
 
