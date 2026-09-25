@@ -106,6 +106,15 @@ type ClientOptions struct {
 	ClientCertificate string
 	ClientKey         string
 
+	// BlockWriteRetries is how many times a FileWriter asks the namenode for
+	// a new block on other datanodes after a datanode refused to open a block
+	// (connection failure or a non-SUCCESS reply to the write request). The
+	// refused block is abandoned and its datanode excluded from later
+	// allocations of the same file, mirroring the Java client's
+	// dfs.client.block.write.retries. Zero means the default of 3; a
+	// negative value disables the retry.
+	BlockWriteRetries int
+
 	// skipSaslForPrivilegedDatanodePorts implements a strange edge case present
 	// in the official java client. If data.transfer.protection is set but not
 	// dfs.encrypt.data.transfer, and the datanode is running on a privileged
@@ -139,6 +148,9 @@ type ClientOptions struct {
 //	// (in the latter case, it is set to 'privacy').
 //	DataTransferProtection string
 //
+//	// Determined by dfs.client.block.write.retries.
+//	BlockWriteRetries int
+//
 // Because of the way Kerberos can be forced by the Hadoop configuration but not
 // actually configured, you should check for whether KerberosClient is set in
 // the resulting ClientOptions before proceeding:
@@ -152,6 +164,17 @@ func ClientOptionsFromConf(conf hadoopconf.HadoopConf) ClientOptions {
 	options := ClientOptions{Addresses: conf.Namenodes()}
 
 	options.UseDatanodeHostname = (conf["dfs.client.use.datanode.hostname"] == "true")
+
+	if v := conf["dfs.client.block.write.retries"]; v != "" {
+		if retries, err := strconv.Atoi(v); err == nil {
+			if retries < 0 {
+				retries = -1
+			} else if retries == 0 {
+				retries = -1 // no retries; 0 on the option means default
+			}
+			options.BlockWriteRetries = retries
+		}
+	}
 
 	if strings.ToLower(conf["hadoop.security.authentication"]) == "kerberos" {
 		// Set an empty KerberosClient here so that the user is forced to either
