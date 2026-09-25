@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -96,16 +97,38 @@ func getClientWithFaultyDatanodes(t *testing.T, mode string, refuse func(dial in
 	return client, d
 }
 
-func liveDatanodes(t *testing.T, c *Client) []*hdfs.DatanodeInfoProto {
+// liveDatanodeCount asks the namenode how many datanodes are live. The RPC
+// needs superuser privilege, so it goes through the harness's superuser
+// client; if that is not a superuser on this cluster either, ok is false and
+// the caller decides from the namenode's block placement errors instead.
+func liveDatanodeCount(t *testing.T) (count int, ok bool) {
 	req := &hdfs.GetDatanodeReportRequestProto{Type: hdfs.DatanodeReportTypeProto_LIVE.Enum()}
 	resp := &hdfs.GetDatanodeReportResponseProto{}
-	require.NoError(t, c.namenode.Execute("getDatanodeReport", req, resp))
-	return resp.GetDi()
+	if err := getClientForSuperUser(t).namenode.Execute("getDatanodeReport", req, resp); err != nil {
+		t.Logf("cannot read the datanode report (%v); relying on block placement errors instead", err)
+		return 0, false
+	}
+	return len(resp.GetDi()), true
 }
 
-func requireLiveDatanodes(t *testing.T, c *Client, n int) {
-	if live := liveDatanodes(t, c); len(live) < n {
-		t.Skipf("test needs at least %d live datanodes, cluster has %d", n, len(live))
+func requireLiveDatanodes(t *testing.T, n int) {
+	if count, ok := liveDatanodeCount(t); ok && count < n {
+		t.Skipf("test needs at least %d live datanodes, cluster has %d", n, count)
+	}
+}
+
+// skipIfNoSpareDatanode skips the test when the write failed because the
+// namenode had no datanode left outside the excluded set, which means the
+// retry worked as designed but the cluster is too small to show it.
+func skipIfNoSpareDatanode(t *testing.T, err error) {
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "could only be replicated to 0 nodes") ||
+		strings.Contains(msg, "excluded in this operation") ||
+		strings.Contains(msg, "NotEnoughReplicasException") {
+		t.Skipf("no datanode left to retry on after excluding the refusing one: %v", err)
 	}
 }
 
@@ -172,13 +195,14 @@ func TestClusterWriteRetriesRefusedBlock(t *testing.T) {
 			client, dialer := getClientWithFaultyDatanodes(t, mode,
 				func(dial int, addr string) bool { return dial == 1 })
 			defer client.Close()
-			requireLiveDatanodes(t, client, 2)
+			requireLiveDatanodes(t, 2)
 
 			writer, err := client.CreateFile(path, 1, 1<<20, 0644, false, false)
 			require.NoError(t, err)
 
 			payload := randomPayload(200 * 1024) // several packets, one block
 			n, err := writer.Write(payload)
+			skipIfNoSpareDatanode(t, err)
 			require.NoError(t, err)
 			assert.Equal(t, len(payload), n)
 			assertClose(t, writer)
@@ -207,7 +231,7 @@ func TestClusterWriteRetriesRefusedMiddleBlock(t *testing.T) {
 	client, dialer := getClientWithFaultyDatanodes(t, "status",
 		func(dial int, addr string) bool { return dial == 2 })
 	defer client.Close()
-	requireLiveDatanodes(t, client, 2)
+	requireLiveDatanodes(t, 2)
 
 	const blockSize = 1 << 20
 	writer, err := client.CreateFile(path, 1, blockSize, 0644, false, false)
@@ -215,6 +239,7 @@ func TestClusterWriteRetriesRefusedMiddleBlock(t *testing.T) {
 
 	payload := randomPayload(2*blockSize + blockSize/2) // 3 blocks
 	n, err := writer.Write(payload)
+	skipIfNoSpareDatanode(t, err)
 	require.NoError(t, err)
 	assert.Equal(t, len(payload), n)
 	assertClose(t, writer)
@@ -293,7 +318,7 @@ func TestClusterSmallFileOverflowRetriesRefusedBlock(t *testing.T) {
 	client, dialer := getClientWithFaultyDatanodes(t, "status",
 		func(dial int, addr string) bool { return dial == 1 })
 	defer client.Close()
-	requireLiveDatanodes(t, client, 2)
+	requireLiveDatanodes(t, 2)
 
 	writer, err := client.Create(path)
 	require.NoError(t, err)
@@ -302,6 +327,7 @@ func TestClusterSmallFileOverflowRetriesRefusedBlock(t *testing.T) {
 	_, err = writer.Write(payload[:MaxSmallFileSize])
 	require.NoError(t, err)
 	_, err = writer.Write(payload[MaxSmallFileSize:]) // overflows the DB buffer
+	skipIfNoSpareDatanode(t, err)
 	require.NoError(t, err)
 	assertClose(t, writer)
 
