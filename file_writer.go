@@ -499,9 +499,7 @@ func (f *FileWriter) replaceRefusedBlock(cause error) error {
 	bw := f.blockWriter
 	refused := bw.Block.GetB()
 	badNode := bw.FailedDatanode()
-	f.excludeDatanode(badNode)
 	f.blockWriter = nil
-	f.blockSetupFailures++
 
 	abandonErr := f.abandonBlock(refused)
 	if abandonErr != nil {
@@ -510,6 +508,14 @@ func (f *FileWriter) replaceRefusedBlock(cause error) error {
 			refused.GetBlockId(), datanodeName(badNode), cause, abandonErr)}
 	}
 
+	// Past the (absolute) deadline a retry can only time out again, and the
+	// datanode is not to blame.
+	if !f.deadline.IsZero() && !time.Now().Before(f.deadline) {
+		return &os.PathError{Op: "create", Path: f.name, Err: cause}
+	}
+
+	f.excludeDatanode(badNode)
+	f.blockSetupFailures++
 	retries := f.blockWriteRetries()
 	if f.blockSetupFailures > retries {
 		return &os.PathError{Op: "create", Path: f.name, Err: fmt.Errorf(
