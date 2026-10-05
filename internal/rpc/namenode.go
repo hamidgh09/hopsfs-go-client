@@ -258,6 +258,9 @@ func (c *NamenodeConnection) dial(address string, deadline time.Time) (net.Conn,
 }
 
 func (c *NamenodeConnection) handshake(deadline time.Time) error {
+	if deadline.IsZero() {
+		return c.doNamenodeHandshake()
+	}
 	if err := c.conn.SetDeadline(deadline); err != nil {
 		return fmt.Errorf("setting handshake deadline: %w", err)
 	}
