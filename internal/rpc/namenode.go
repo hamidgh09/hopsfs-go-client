@@ -209,9 +209,7 @@ func (c *NamenodeConnection) resolveConnection() error {
 			continue
 		}
 
-		c.setDeadline(deadline)
-		err = c.doNamenodeHandshake()
-		c.setDeadline(time.Time{})
+		err = c.handshake(deadline)
 		if err != nil {
 			c.markFailure(err)
 			continue
@@ -259,10 +257,15 @@ func (c *NamenodeConnection) dial(address string, deadline time.Time) (net.Conn,
 	return c.dialFunc(ctx, "tcp", address)
 }
 
-func (c *NamenodeConnection) setDeadline(deadline time.Time) {
-	if c.conn != nil {
-		c.conn.SetDeadline(deadline)
+func (c *NamenodeConnection) handshake(deadline time.Time) error {
+	if err := c.conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("setting handshake deadline: %w", err)
 	}
+	err := c.doNamenodeHandshake()
+	if clearErr := c.conn.SetDeadline(time.Time{}); clearErr != nil && err == nil {
+		err = fmt.Errorf("clearing handshake deadline: %w", clearErr)
+	}
+	return err
 }
 
 func (c *NamenodeConnection) markFailure(err error) {
