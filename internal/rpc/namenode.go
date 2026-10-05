@@ -10,9 +10,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
-	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	hadoop "github.com/colinmarc/hdfs/v2/internal/protocol/hadoop_common"
@@ -40,9 +38,6 @@ const (
 	DefaultTCPUserTimeout = 30 * time.Second
 	// The TCP keep-alive probe interval used for idle namenode connections.
 	keepAliveInterval = 15 * time.Second
-
-	// tcpUserTimeoutOption is TCP_USER_TIMEOUT from <linux/tcp.h>. The syscall package does not export it.
-	tcpUserTimeoutOption = 18
 )
 
 // NamenodeConnection represents an open connection to a namenode.
@@ -238,18 +233,9 @@ func (c *NamenodeConnection) newDialer() *net.Dialer {
 		Timeout:   c.dialTimeout,
 		KeepAlive: keepAliveInterval,
 	}
-	if c.tcpUserTimeout > 0 && runtime.GOOS == "linux" {
-		ms := int(c.tcpUserTimeout / time.Millisecond)
-		d.Control = func(network, address string, rc syscall.RawConn) error {
-			var sockErr error
-			err := rc.Control(func(fd uintptr) {
-				sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, tcpUserTimeoutOption, ms)
-			})
-			if err != nil {
-				return err
-			}
-			return sockErr
-		}
+	if c.tcpUserTimeout > 0 {
+		// nil on platforms without TCP_USER_TIMEOUT.
+		d.Control = tcpUserTimeoutControl(c.tcpUserTimeout)
 	}
 	return d
 }
