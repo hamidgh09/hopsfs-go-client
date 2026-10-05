@@ -202,15 +202,16 @@ func (c *NamenodeConnection) resolveConnection() error {
 		}
 
 		c.host = host
-		c.conn, err = c.dial(host.address)
+		deadline := c.connectDeadline()
+		c.conn, err = c.dial(host.address, deadline)
 		if err != nil {
 			c.markFailure(err)
 			continue
 		}
 
-		c.setHandshakeDeadline()
+		c.setDeadline(deadline)
 		err = c.doNamenodeHandshake()
-		c.clearDeadline()
+		c.setDeadline(time.Time{})
 		if err != nil {
 			c.markFailure(err)
 			continue
@@ -240,25 +241,27 @@ func (c *NamenodeConnection) newDialer() *net.Dialer {
 	return d
 }
 
-func (c *NamenodeConnection) dial(address string) (net.Conn, error) {
+func (c *NamenodeConnection) connectDeadline() time.Time {
+	if c.dialTimeout <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(c.dialTimeout)
+}
+
+// dial connects to address, giving up at deadline unless it is zero.
+func (c *NamenodeConnection) dial(address string, deadline time.Time) (net.Conn, error) {
 	ctx := context.Background()
-	if c.dialTimeout > 0 {
+	if !deadline.IsZero() {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.dialTimeout)
+		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
 	return c.dialFunc(ctx, "tcp", address)
 }
 
-func (c *NamenodeConnection) setHandshakeDeadline() {
-	if c.conn != nil && c.dialTimeout > 0 {
-		c.conn.SetDeadline(time.Now().Add(c.dialTimeout))
-	}
-}
-
-func (c *NamenodeConnection) clearDeadline() {
+func (c *NamenodeConnection) setDeadline(deadline time.Time) {
 	if c.conn != nil {
-		c.conn.SetDeadline(time.Time{})
+		c.conn.SetDeadline(deadline)
 	}
 }
 

@@ -107,12 +107,11 @@ type ClientOptions struct {
 	ClientCertificate string
 	ClientKey         string
 
-	// NamenodeDialTimeout bounds how long connecting to a namenode may take,
-	// including the TLS and namenode handshakes. Zero selects
-	// rpc.DefaultDialTimeout; a negative value disables the limit.
+	// Bounds how long connecting to a namenode may take, including the TLS and namenode handshakes.
+	// Zero selects rpc.DefaultDialTimeout; a negative value disables the limit.
 	NamenodeDialTimeout time.Duration
-	// NamenodeTCPUserTimeout sets TCP_USER_TIMEOUT on namenode connections on
-	// platforms that support it.
+	// Sets TCP_USER_TIMEOUT on namenode connections on platforms that support it.
+	// Zero selects the default; a negative value disables it.
 	NamenodeTCPUserTimeout time.Duration
 
 	// skipSaslForPrivilegedDatanodePorts implements a strange edge case present
